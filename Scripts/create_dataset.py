@@ -1,49 +1,74 @@
 import os
-import pickle
-import mediapipe as mp
-import cv2
-import matplotlib.pyplot as plt
+import shutil
+import random
 
 
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
+def reset_dataset_dir(dest_dir="dataset"):
+    """
+    Remove o diretório do dataset, se existir, e cria novamente.
+    """
 
-hands = mp_hands.Hands(static_image_mode=True, min_detection_confidence=0.3)
+    if os.path.exists(dest_dir):
+        shutil.rmtree(dest_dir)
+        print(f"[INFO] Diretório '{dest_dir}/' removido.")
+    os.makedirs(dest_dir, exist_ok=True)
+    print(f"[INFO] Diretório '{dest_dir}/' recriado.")
 
-DATA_DIR = './data'
 
-data = []
-labels = []
-for dir_ in os.listdir(DATA_DIR):
-    for img_path in os.listdir(os.path.join(DATA_DIR, dir_)):
-        data_aux = []
+def create_dir_structure(base_dir="dataset"):
+    """
+    Cria estrutura de diretórios para treino e teste.
+    """
 
-        x_ = []
-        y_ = []
+    for split in ["train", "test"]:
+        split_path = os.path.join(base_dir, split)
+        os.makedirs(split_path, exist_ok=True)
+    print("[INFO] Estrutura de diretórios criada/verificada.")
 
-        img = cv2.imread(os.path.join(DATA_DIR, dir_, img_path))
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        results = hands.process(img_rgb)
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                for i in range(len(hand_landmarks.landmark)):
-                    x = hand_landmarks.landmark[i].x
-                    y = hand_landmarks.landmark[i].y
+def split_and_copy_data(source_dir="data", dest_dir="dataset", train_ratio=0.8):
+    """
+    Divide as imagens de cada classe e copia para treino/teste.
+    """
+    
+    letters = sorted(os.listdir(source_dir))
+    total_images = 0
 
-                    x_.append(x)
-                    y_.append(y)
+    for letter in letters:
+        letter_path = os.path.join(source_dir, letter)
+        if not os.path.isdir(letter_path):
+            continue
 
-                for i in range(len(hand_landmarks.landmark)):
-                    x = hand_landmarks.landmark[i].x
-                    y = hand_landmarks.landmark[i].y
-                    data_aux.append(x - min(x_))
-                    data_aux.append(y - min(y_))
+        images = os.listdir(letter_path)
+        random.shuffle(images)
 
-            data.append(data_aux)
-            labels.append(dir_)
+        split_idx = int(len(images) * train_ratio)
+        train_imgs = images[:split_idx]
+        test_imgs = images[split_idx:]
 
-f = open('data.pickle', 'wb')
-pickle.dump({'data': data, 'labels': labels}, f)
-f.close()
+        # cria pastas de destino
+        train_dir = os.path.join(dest_dir, "train", letter)
+        test_dir = os.path.join(dest_dir, "test", letter)
+        os.makedirs(train_dir, exist_ok=True)
+        os.makedirs(test_dir, exist_ok=True)
+
+        # copia arquivos
+        for img in train_imgs:
+            shutil.copy(os.path.join(letter_path, img), os.path.join(train_dir, img))
+        for img in test_imgs:
+            shutil.copy(os.path.join(letter_path, img), os.path.join(test_dir, img))
+
+        print(f"[OK] Letra '{letter}': {len(train_imgs)} treino / {len(test_imgs)} teste")
+        total_images += len(images)
+
+    print(f"\n[INFO] Total de imagens processadas: {total_images}")
+
+
+def main():
+    reset_dataset_dir("dataset")
+    create_dir_structure("dataset")
+    split_and_copy_data("data", "dataset", train_ratio=0.8)
+
+
+if __name__ == "__main__":
+    main()

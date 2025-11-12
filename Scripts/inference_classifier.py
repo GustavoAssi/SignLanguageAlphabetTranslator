@@ -1,76 +1,120 @@
-import pickle
+import os
 import cv2
-import mediapipe as mp
+import json
 import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+import mediapipe as mp
 
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))       
+ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))    
 
-model_dict = pickle.load(open('./model.p', 'rb'))
-model = model_dict['model']
-cap = cv2.VideoCapture(0)
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
-hands = mp_hands.Hands(static_image_mode=True, min_detection_confidence=0.3)
-labels_dict = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H', 8: 'I', 9: 'J', 10: 'K', 11: 'L',
-               12: 'M', 13: 'N', 14: 'O', 15: 'P', 16: 'Q', 17: 'R', 18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W',
-               23: 'X', 24: 'Y', 25: 'Z', 26: '0', 27: '1', 28: '2', 29: '3', 30: '4', 31: '5', 32: '6', 33: '7',
-               34: '8', 35: '9'}
-while True:
+MODEL_PATH = os.path.join(ROOT_DIR, "model_sign_language.h5")
+CLASS_MAPPING_PATH = os.path.join(ROOT_DIR, "class_mapping.json")
 
-    data_aux = []
-    x_ = []
-    y_ = []
 
-    ret, frame = cap.read()
+def load_class_mapping(mapping_path=CLASS_MAPPING_PATH):
+    """
+    Carrega e inverte o mapeamento de classes.
+    """
 
-    H, W, _ = frame.shape
+    with open(mapping_path, "r") as f:
+        class_indices = json.load(f)
+    idx_to_class = {v: k for k, v in class_indices.items()}
+    print(f"[INFO] Mapeamento de classes carregado: {idx_to_class}")
+    return idx_to_class
 
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    results = hands.process(frame_rgb)
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            mp_drawing.draw_landmarks(
-                frame,  # image to draw
-                hand_landmarks,  # model output
-                mp_hands.HAND_CONNECTIONS,  # hand connections
-                mp_drawing_styles.get_default_hand_landmarks_style(),
-                mp_drawing_styles.get_default_hand_connections_style())
+def preprocess_frame(frame, hand_landmarks, image_size=(224, 224)):
+    """
+    Recorta e pré-processa a região da mão detectada.
+    """
 
-        for hand_landmarks in results.multi_hand_landmarks:
-            for i in range(len(hand_landmarks.landmark)):
-                x = hand_landmarks.landmark[i].x
-                y = hand_landmarks.landmark[i].y
+    h, w, _ = frame.shape
+    x_coords = [lm.x for lm in hand_landmarks.landmark]
+    y_coords = [lm.y for lm in hand_landmarks.landmark]
 
-                x_.append(x)
-                y_.append(y)
+    x_min, x_max = int(min(x_coords) * w), int(max(x_coords) * w)
+    y_min, y_max = int(min(y_coords) * h), int(max(y_coords) * h)
 
-            for i in range(len(hand_landmarks.landmark)):
-                x = hand_landmarks.landmark[i].x
-                y = hand_landmarks.landmark[i].y
-                data_aux.append(x - min(x_))
-                data_aux.append(y - min(y_))
+    offset = 20
+    x_min, x_max = max(0, x_min - offset), min(w, x_max + offset)
+    y_min, y_max = max(0, y_min - offset), min(h, y_max + offset)
 
-        x1 = int(min(x_) * W) - 10
-        y1 = int(min(y_) * H) - 10
+    hand_img = frame[y_min:y_max, x_min:x_max]
+    hand_img = cv2.resize(hand_img, image_size)
+    hand_img = cv2.cvtColor(hand_img, cv2.COLOR_BGR2RGB)
+    hand_img = hand_img / 255.0
+    return np.expand_dims(hand_img, axis=0)
 
-        x2 = int(max(x_) * W) - 10
-        y2 = int(max(y_) * H) - 10
 
-        max_length = 84
-        data_aux = data_aux + [0]*(max_length - len(data_aux))
-        prediction = model.predict([np.asarray(data_aux)])
+def predict_letter(model, frame, hand_landmarks, idx_to_class):
+    """
+    Realiza predição e retorna letra + percentual de confiança.
+    """
 
-        predicted_character = labels_dict[int(prediction[0])]
+    img = preprocess_frame(frame, hand_landmarks)
+    preds = model.predict(img, verbose=0)[0]
+    pred_idx = np.argmax(preds)
+    pred_class = idx_to_class[pred_idx]
+    confidence = preds[pred_idx] * 100
+    return pred_class, confidence
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), 4)
-        cv2.putText(frame, predicted_character, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.3,
-                    (0, 0, 0), 3, cv2.LINE_AA)
 
-    cv2.imshow('frame', frame)
-    if cv2.waitKey(5) == 27:
-        break
+def main():
+    
+    print("[INFO] Carregando modelo e mapeamento de classes...")
+    model = load_model(MODEL_PATH)
+    idx_to_class = load_class_mapping(CLASS_MAPPING_PATH)
 
-cap.release()
-cv2.destroyAllWindows()
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(max_num_hands=1)
+    mp_draw = mp.solutions.drawing_utils
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("[ERRO] Não foi possível acessar a webcam.")
+        return
+
+    print("[INFO] Pressione ESC para sair.")
+    last_pred = None
+    stable_count = 0
+    last_conf = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("[ERRO] Falha na captura de frame.")
+            break
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(frame_rgb)
+
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                pred, conf = predict_letter(model, frame, hand_landmarks, idx_to_class)
+
+                if pred == last_pred:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                    last_pred = pred
+                    last_conf = conf
+
+                if stable_count > 3:
+                    cv2.putText(frame, f"{pred} ({last_conf:.1f}%)",
+                                (10, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                                2, (0, 255, 0), 3)
+
+        cv2.imshow("Classificador de Libras - CNN", frame)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
