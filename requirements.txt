@@ -4,3 +4,6 @@ numpy==1.26.4
 tqdm==4.67.1       
 imutils==0.5.4       
 tensorflow==2.20.0
+scikit-learn==1.7.2
+pandas==2.3.3
+seaborn==0.13.2
