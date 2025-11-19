@@ -13,6 +13,8 @@ libras/
 *.keras
 *.tflite
 *.json
+*.csv
+*.png
 
 *.log
 *.tmp
